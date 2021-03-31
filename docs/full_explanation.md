@@ -55,7 +55,7 @@ But wait, if we can override he return address, why not jump to the stack? The r
 read about the architecture of the calculator you will see that the first segment of memory is different for code and 
 data, because the RAM is mapped at the first segment we can't actually jump to it, because there is just more code where
 the RAM is. And even tho the second segment and forward is shared between code and data, it is not actually useful because 
-there is nothing that is writable at these positions, it is just more ROM (TODO: verify this claim).
+there is nothing that is writable at these positions, it is just more ROM.
 
 ## Basic overflow
 
