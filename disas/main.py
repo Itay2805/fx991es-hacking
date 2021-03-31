@@ -1,4 +1,6 @@
+import argparse
 import struct
+import sys
 import re
 
 
@@ -251,7 +253,6 @@ class GadgetFinder:
         pc = self.offset
         opcode = self.get_next_word()
         read_more = False
-        size = 2
 
         for itype in range(len(INSTRUCTIONS)):
             ptrn, mnemonic, fmts = INSTRUCTIONS[itype]
@@ -259,7 +260,6 @@ class GadgetFinder:
             # Check if we need more
             if not read_more and len(ptrn) > 16:
                 opcode = self.get_next_word() << 16 | opcode
-                size += 2
                 read_more = True
 
             # Try to parse
@@ -293,11 +293,11 @@ class GadgetFinder:
                 oprs.append(opr)
 
             # We done here
-            return pc, size, mnemonic, tuple(oprs)
+            return pc, mnemonic, tuple(oprs)
 
         # Don't skip two instructions, only skip one
         self.offset -= 2
-        return pc, 2, None, None
+        return None
 
     def disasm_all(self):
         insts = []
@@ -319,7 +319,7 @@ class GadgetFinder:
                 i += 1
                 continue
 
-            pc, size, mnemonic, oprs = insts[i]
+            pc, mnemonic, oprs = insts[i]
 
             # These are not useful for us
             if pc < 0x1000 or pc > 0x1ffff:
@@ -330,21 +330,23 @@ class GadgetFinder:
             # Normal gadgets
             #
             if mnemonic == 'POP' and oprs[0] == 'PC':
-                full = (insts[i - 1][2], insts[i - 1][3])
+                if insts[i - 1] is not None:
+                    full = (insts[i - 1][1], insts[i - 1][2])
 
-                # Add to the list
-                found_normal[full] = insts[i - 1][0]
+                    # Add to the list
+                    found_normal[full] = insts[i - 1][0]
 
-                # If found a link version we can remove it because we prefer
-                # non-link gadgets
-                if full in found_link:
-                    del found_link[full]
-
+                    # If found a link version we can remove it because we prefer
+                    # non-link gadgets
+                    if full in found_link:
+                        del found_link[full]
+                
             #
             # Link based gadgets
             #
-            if mnemonic == 'RT':
-                full = (insts[i - 1][2], insts[i - 1][3])
+            elif mnemonic == 'RT':
+                if insts[i - 1] is not None:
+                    full = (insts[i - 1][1], insts[i - 1][2])
 
                 if full not in found_normal:
                     found_link[full] = insts[i - 1][0]
@@ -352,28 +354,54 @@ class GadgetFinder:
             i += 1
 
         return found_normal, found_link
+        
 
-# with open("test.txt", 'w') as out:
-#     gad = GadgetFinder(open('rom.bin', 'rb').read())
-#     for pc, size, mnemonic, oprs in gad.disasm_all():
-#         if mnemonic is None:
-#             out.write(hex(pc) + '\n')
-#             out.write(hex(pc + 1) + '\n')
-#         else:
-#             out.write(hex(pc) + ' ' + mnemonic + ' ' + ', '.join(oprs) + '\n')
-
-gad = GadgetFinder(open('rom.bin', 'rb').read())
-normal_gad, link_gad = gad.find_gadgets()
-things = []
-
-
-def do_one(gadgets):
+def write_gadgets(gadgets, out):
+    """
+    Write gadgets in a sorted manner
+    """
+    things = []
     for gad in gadgets:
         things.append((hex(gadgets[gad]), gad))
 
     for i in sorted(things, key=lambda x: x[1]):
-        print(i[0] + ' ' + i[1][0] + ' ' + ', '.join(i[1][1]))
+        out.write(i[0] + ' ' + i[1][0] + ' ' + ', '.join(i[1][1]))
+        out.write('\n')
 
 
-do_one(normal_gad)
-do_one(link_gad)
+def parse_args():
+    parser = argparse.ArgumentParser(description='Disassembler and Gadget finder for nX-U8/100')
+    parser.add_argument('-i', '--input', type=str, required=True, help='The input file')
+    parser.add_argument('-o', '--output', type=str, help='The output file (stdout if not specified)')
+    parser.add_argument('--find-gadgets', action='store_true', help="Output a gadget file instead of full disasm")
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    args = parse_args()
+
+    # Fully read it 
+    rom = open(args.input, 'rb').read()
+    gad = GadgetFinder(rom)
+
+    # Open the output 
+    if args.output is not None:
+        out = open(args.output, 'w')
+    else:
+        out = sys.stdout
+
+    # Either find gadgets or do this
+    if args.find_gadgets:
+        normal_gad, link_gad = gad.find_gadgets()
+        out.write('# POP PC\n')
+        write_gadgets(normal_gad, out)
+        out.write('#######################################\n')
+        out.write('# RT\n')
+        write_gadgets(link_gad, out)
+    else:
+        for pc, mnemonic, oprs in gad.disasm_all():
+            if mnemonic is None:
+                out.write(hex(pc) + '\n')
+                out.write(hex(pc + 1) + '\n')
+            else:
+                out.write(hex(pc) + ' ' + mnemonic + ' ' + ', '.join(oprs) + '\n')
