@@ -67,6 +67,8 @@ class GadgetEmulator:
             return self._lr
         elif r == 'LCSR':
             return self._lcsr
+        elif r == 'SP':
+            return self._sp
         else:
             assert False, f"Invalid register {r}"
 
@@ -121,6 +123,8 @@ class GadgetEmulator:
         # Can only write to ram, all other writes are invalid
         if 0x8000 <= addr < 0x8E00:
             self._ram[addr - 0x8000] = value
+        else:
+            assert False, f"attempted to write to invalid range {addr}"
 
     def eval_opr(self, opr: str) -> int:
         if opr.startswith('#'):
@@ -245,6 +249,15 @@ class GadgetEmulator:
             op2 = self.eval_opr(oprs[1])
             self.write_reg(oprs[0], op2)
             self.update_flags(op2, self.reg_size(oprs[0]), 'zs') 
+
+        elif mnemonic == 'ST':
+            op1 = self.eval_opr(oprs[0])
+            op2 = self.eval_opr(oprs[1][1:-1])
+            size = self.reg_size(oprs[0])
+            for _ in range(size):
+                self.write_mem(op2, op1 & 0xFF)
+                op1 >>= 8
+                op2 += 1
 
         else:
             assert False, f"Unimplemented instruction {mnemonic}"
