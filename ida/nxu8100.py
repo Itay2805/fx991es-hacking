@@ -406,7 +406,7 @@ class NXU8100Processor(processor_t):
             # Immediate
             out.type = o_imm
             out.dtype = dt_byte
-            out.value = int(opr[1:], 16)
+            out.value = int(opr[1:], 10)
 
         elif ':' in opr or opr.endswith('h'):
             # A direct address
