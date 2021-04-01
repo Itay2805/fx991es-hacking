@@ -10,6 +10,7 @@ These are the sources I looked at
 
 ## Main research thread
 * https://community.casiocalc.org/topic/7583-fx-82-83gt-115-991es-plus-hacking/?st=0
+* http://casiocalc.wikidot.com/ 
 
 ### Main code, roms and a little documentation
 * https://github.com/user202729/fxesplus
