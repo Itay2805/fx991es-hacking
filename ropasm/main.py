@@ -22,6 +22,8 @@ class Assembler:
         self._labels = {}
         self._relocations = []
         self._from_overflow = from_overflow
+        
+        self._has_link = False
 
     ######################################################################
     # Label management
@@ -40,7 +42,7 @@ class Assembler:
         Place the given label at the current position
         """
         assert self._labels[lbl] is None, "Tried to place the same label twice!"
-        self._labels[lbl] = len(self._data)
+        self._labels[lbl] = len(self._stack)
 
     def label(self):
         """
@@ -73,7 +75,7 @@ class Assembler:
         push an address of a label
         """
         self._relocations.append(Relocation(len(self._stack), val))
-        self.push16(0x00)
+        self.push16(0x3030)
 
     def push_addr(self, val: int or str):
         """
@@ -129,35 +131,6 @@ class Assembler:
     # Higher level primitives
     ######################################################################
 
-    def set_lr(self):
-        """
-        Sets the LR and LCSR registers so we can use gadgets that require 
-        the link register
-
-        TODO: automatic
-
-        overwrites ER12
-        """
-
-        # we don't have the link setup yet, we need to set
-        # it nicely
-
-        # Set ER12 to the next address
-        # 14A7A                 POP     ER12
-        # 14A7C                 POP     PC
-        self.push_addr(0x14a7a)
-
-        # we need to use a trampoline, and this is perfect 
-        # to be used as a trampoline, only need the address
-        # since `BL ERn` works on the same CSR
-        self.push16(0x11D92 & 0xFFFF)
-
-        # Jump to it with the link register being set
-        # 11D90                 BL      ER12
-        # 11D92                 POP     PC
-        self.push_addr(0x11D90)
-
-        self._has_link = True
 
     # These are gadgets to set different registers
     # We also keep gadgets that set a register to a certain value
@@ -190,8 +163,42 @@ class Assembler:
             0x44b2, # POP ER2
             push16,
             {}
+        ),
+        'ER12': (
+            0x3a6a, # POP ER12
+            push16,
+            {}
         )
     }
+
+    def set_lr(self):
+        """
+        Sets the LR and LCSR registers so we can use gadgets that require 
+        the link register
+
+        TODO: automatic
+
+        overwrites ER12
+        """
+        assert not self._has_link, "Already set link register"
+
+        # we don't have the link setup yet, we need to set
+        # it nicely
+
+        # Set ER12 to the next address
+        self.push_addr(self.SET_REG_GADGETS['ER12'][0])
+
+        # we need to use a trampoline, and this is perfect 
+        # to be used as a trampoline, only need the address
+        # since `BL ERn` works on the same CSR
+        self.SET_REG_GADGETS['ER12'][1](self, 0x11D92 & 0xFFFF)
+
+        # Jump to it with the link register being set
+        # 11D90                 BL      ER12
+        # 11D92                 POP     PC
+        self.push_addr(0x11D90)
+
+        self._has_link = True
 
     def set_reg(self, reg: str, value: int):
         """
@@ -221,17 +228,21 @@ class Assembler:
         Truncates R0 to a "bool"
         * if it has value set it to 1
         * if it has no value set it to 0
+
+        because R1 is zeroed out in this you can use ER0 directly
+        if need be
         """
+        assert self._has_link, "This gadget requires a link register"
 
         # For this gadget to work we need
         # this to be zero
-        asm.set_reg('R1', 0)
+        self.set_reg('R1', 0)
 
         # 8ac4                 CMP R1, R0
         # 8ac6                 SUBC R0, R0
         # 8ac8                 NEG R0
         # 8aca                 RT 
-        asm.push_addr(0x8ac4)
+        self.push_addr(0x8ac4)
 
     def _st_relative_er2(self, offset):
         """
@@ -239,21 +250,25 @@ class Assembler:
 
         overwrites ER0
         """
+        assert self._has_link, "This gadget requires a link register"
+
+        # TODO: replace with ER4 and ER0 for better correctness 
+
+        # Load R4 to have the value we want to add to R0
+        # 15EE0                 POP     R4
+        # 15EE2                 POP     PC
+        self.push_addr(0x15EE0)
+        self.push8(9 + offset)
+
         # We are going to get the current stack position so we 
         # can modify it to point to the 
         # 4588                 MOV ER0, SP
         # 458a                 RT 
         self.push_addr(0x4588)
 
-        # Load R4 to have the value we want to add to R0
-        # 15EE0                 POP     R4
-        # 15EE2                 POP     PC
-        self.push_addr(0x15EE0)
-        self.push8(13 + offset)
-
         # now we need to add to ER0 the offset so the value after 
         # the store is the address that will be poped, we need to 
-        # add 13 (POP R4 (4) + addition value (1) + ADD address (4) + ST address (4) + offset)
+        # add 9 (addition value (1) + ADD address (4) + ST address (4) + offset)
         # 174e0                 ADD R0, R4
         # 174e2                 RT 
         self.push_addr(0x174e0)
@@ -276,17 +291,17 @@ class Assembler:
         # is currently inside er2
         self._st_relative_er2(4)
 
-        # 4E4C                 POP     ER14
-        # 4E4E                 POP     PC
-        self.push_addr(0x4E4C)
-        self.push16(0x0000)
+        # 2c72                 POP ER14
+        # 2c74                 POP PC
+        self.push_addr(0x2c72)
+        self.push16(0x3030)
 
-        # 4E4A                 MOV     SP, ER14
-        # 4E4C                 POP     ER14
-        # 4E4E                 POP     PC
-        self.push_addr(0x4E4A)
-        self.push16(0x0000)
-        
+        # 2c70                 MOV SP, ER14
+        # 2c72                 POP ER14
+        # 2c74                 POP PC
+        self.push_addr(0x2c70)
+        self.push16(0x3030)
+    
     def goto(self, lbl: str):
         """
         Allows to jump to a label in the code
@@ -295,16 +310,16 @@ class Assembler:
               to will already have the address we want making so for the next gadgets we only 
               need a single gadget
         """
-        # 4E4C                 POP     ER14
-        # 4E4E                 POP     PC
-        self.push_addr(0x4E4C)
+        # 2c72                 POP ER14
+        # 2c74                 POP PC
+        self.push_addr(0x2c72)
         self.push_lbl(lbl)
 
-        # 4E4A                 MOV     SP, ER14
-        # 4E4C                 POP     ER14
-        # 4E4E                 POP     PC
-        self.push_addr(0x4E4A)
-        self.push16(0x0)
+        # 2c70                 MOV SP, ER14
+        # 2c72                 POP ER14
+        # 2c74                 POP PC
+        self.push_addr(0x2c70)
+        self.push16(0x3030)
 
     def deref_er0_to_r2(self):
         """
@@ -312,7 +327,7 @@ class Assembler:
         """
         # 276a                 ST R2, [ER0]
         # 276c                 POP PC
-        self.push_addr(0x276a) # 0x2b4a 
+        self.push_addr(0x276a) 
     
     def load_word_from_er2(self, table):
         """
@@ -321,6 +336,8 @@ class Assembler:
 
         overwrites R2
         """
+        assert self._has_link, "This gadget requires a link register"
+
         # This gadget is perfect since it does everything we need:
         #   ER0 = POKE16(<condition> * 2 + <offset>)
         # 134b4                 ADD ER0, ER0
@@ -336,25 +353,82 @@ class Assembler:
         """
         self.push_addr(0xffc2)
 
-    def relocate(self, initial_sp):
-        """
-        Relocate the labels, we need to know the stack position so
-        we can calculate the addresses to set the stack to
-        """
-        pass
+    MOV_GADGETS = {
+        # POP PC 
+        ('R2', 'R0'): 0x3de2,
+        ('ER0', 'ER8'): 0x1417e,
+        ('ER2', 'ER12'): 0x1399e,
+        ('ER8', 'ER0'): 0x1468c,
 
+        # RT 
+        ('ER0', 'ER2'): 0x87fc,
+        ('ER10', 'ER0'): 0x13e5c,
+        ('ER10', 'ERER20'): 0x13230,
+    }
+
+    def mov(self, dst, src):
+        """
+        Move the register around
+        """
+        assert (dst, src) in self.MOV_GADGETS, f"Can't move {src} to {dst}"
+        self.push_addr(self.MOV_GADGETS[(dst, src)])        
+
+    def set_ea_er12(self):
+        """
+        Set the EA register to a certain value
+
+        This is not a perfect gadget and will overwrite 10 bytes before the 
+        real value, so either make sure the first 10 regs have a valid value, or 
+        don't care about the 10 bytes before the value
+        """
+        assert self._has_link, "This gadget requires a link register"
+
+        # As the comment says this is nice but not that much because 
+        # we override 10 bytes
+        # 16058                 LEA [ER12]
+        # 1605a                 ST QR0, [EA+]
+        # 1605c                 ST ER8, [EA+]
+        # 1605e                 RT 
+        self.push_addr(0x16058)
+
+
+def build_loader():
+    """
+    This is going to build a loader that can be used to load
+    more code nicely
+    """
+    asm = Assembler(True)
+
+    # symbols we are going to use 
+    getkeycode = 0xB45E
+
+    asm.set_lr()
+    asm.set_reg('ER12', 0x8101)
+    asm.set_ea_er12()
+
+    loop_get_key = asm.label()
+
+    # Do two bytes so we can override the loader afterwards
+    for _ in range(2):    
+        asm.push_addr(getkeycode)
+        asm.push_addr(0x2ab6) # AND R0, #15
+        asm.mov('R2', 'R0')
+
+        asm.push_addr(getkeycode)
+        asm.push_addr(0x2abe) # AND R1, #15, SLL R0, #4, OR R1, R0, ST R1, 08100h
+
+        asm.push_addr(0x16cec) # ADD ER0, ER2
+
+        asm.mov('R2', 'R0')
+        asm.push_addr(0x1a3f8) # ST R2, [EA+]
+
+    asm.goto(loop_get_key)
+
+    return asm
 
 if __name__ == '__main__':
 
-    asm = Assembler(True)
-    
-    asm.set_lr()
-    asm.set_reg('ER2', 0xBABE)
-    asm.goto_indirect_er2()
-
-    asm.brk()
-
-    full = asm._data =  asm._stack
+    asm = build_loader()
 
     s = ''
     for byt in asm._stack:
