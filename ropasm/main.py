@@ -1,4 +1,5 @@
 from collections import namedtuple
+from typing import *
 import argparse
 import struct
 
@@ -20,7 +21,7 @@ class Assembler:
         """
         self._stack = bytes()
         self._labels = {}
-        self._relocations = []
+        self._relocations: List[Relocation] = []
         self._from_overflow = from_overflow
         
         self._has_link = False
@@ -59,16 +60,16 @@ class Assembler:
     ######################################################################
 
     def push8(self, val: int):
-        self._stack = struct.pack('>B', val) + self._stack
+        self._stack = struct.pack('>B' if val >= 0 else '>b', val) + self._stack
 
     def push16(self, val: int):
-        self._stack = struct.pack('>H', val) + self._stack
+        self._stack = struct.pack('>H' if val >= 0 else '>h', val) + self._stack
 
     def push32(self, val: int):
-        self._stack = struct.pack('>I', val) + self._stack
+        self._stack = struct.pack('>I' if val >= 0 else '>i', val) + self._stack
 
     def push64(self, val: int):
-        self._stack = struct.pack('>Q', val) + self._stack
+        self._stack = struct.pack('>Q' if val >= 0 else '>q', val) + self._stack
 
     def push_lbl(self, val: str):
         """
@@ -391,19 +392,77 @@ class Assembler:
         # 1605e                 RT 
         self.push_addr(0x16058)
 
+    def relocate(self, sp):
+        """
+        Relocate everything to run from the given sp
+        """
+        tmp = bytearray(self._stack)
+        for rel in self._relocations:
+            assert rel.label in self._labels and self._labels[rel.label] is not None, f"Undefined label `{rel.label}`"
+            struct.pack_into('<H', tmp, rel.addr, self._labels[rel.label] + sp)
+        self._stack = bytes(tmp)
 
-def build_loader():
+    def pack_overflow(self, sp, inbuf_addr):
+        """
+        Pack the code in the assembler to run from the overflow exploit.
+
+        The sp is going to be where the first pop is going to be made (start of the rop).
+
+        The inbuf is going to be where the input buffer of the calculator is, it is going to allow us 
+        to align the code nicely so it will end up at the needed sp.
+        """
+        assert len(self._stack) <= 100, "ROP is too large to fit in the overflow exploit..."
+
+        # First we need to relocate it properly 
+        self.relocate(sp)
+
+        # Align this to 100 bytes exactly
+        self._stack += b'\x30' * (100 - len(self._stack))
+
+        # The way we are going to align the hackstring to fit exactly on the stack is with this 
+        # simple calculation, if you remember, we are going to fill the ram with a 100 byte pattern 
+        # starting at the input buffer. So in order to figure the shift of the hackstring we need to make 
+        # so the pattern will start where the SP is currently at we need to just subtract them and mod by 100
+        # then just shift by that amount
+        shift = (sp - inbuf_addr) % 100
+        
+        # Now return it rotated
+        return self._stack[shift:] + self._stack[:shift], shift
+
+def build_loader(program: Assembler, sp: int = 0x8CDC):
     """
     This is going to build a loader that can be used to load
     more code nicely
+
+    Note, this is not really where the stack is at, the stack is really at 0x8DA4, but we moved 
+    the initial stack so we can have it in the loader script without a problem (0x8D can't be entered 
+    but 0x8CDC can be entered)
     """
     asm = Assembler(True)
 
     # symbols we are going to use 
     getkeycode = 0xB45E
 
+    # Calculate the starting of the program
+    program_len = len(program._stack)
+    
+    # Align the program to 2 byte boundary so the overriding
+    # will work nicely and as expected
+    if program_len % 2 != 0:
+        program._stack += '\x00'
+        program_len += 1
+
+    # this is going to be the start of our program
+    # TODO: verify the address is good and realign if we need more space
+    #       to make the address good
+    program_start = sp - program_len
+
+    # once we have it we can relocate the program
+    program.relocate(program_start)
+
+    # Now build the actual loader and return it packed and ready for input 
     asm.set_lr()
-    asm.set_reg('ER12', 0x8101)
+    asm.set_reg('ER12', program_start)
     asm.set_ea_er12()
 
     loop_get_key = asm.label()
@@ -422,16 +481,39 @@ def build_loader():
         asm.mov('R2', 'R0')
         asm.push_addr(0x1a3f8) # ST R2, [EA+]
 
+    offset = len(asm._stack)
     asm.goto(loop_get_key)
 
-    return asm
+    # Pack the loader for the overflow, this will 
+    # also do relocations
+    packed_loader, shift = asm.pack_overflow(sp, 0x8154)
+    dummy_loader = bytearray(packed_loader)
+
+    # now build another version of the loader just that this time it will 
+    # jump to the shellcode at the end instead of the loop
+    #
+    # we get the offset to the goto gadget and we modify the address
+    # we are going to pop from the stack, so skip the first gadget 
+    # and set the poped value
+    dummy_loader[(shift + offset + 4 + 0) % 100] = program_start & 0xFF
+    dummy_loader[(shift + offset + 4 + 1) % 100] = (program_start >> 8) & 0xFF
+
+    return packed_loader, bytes(dummy_loader)[(shift + offset + 4 + 2) % 100:]
 
 if __name__ == '__main__':
 
-    asm = build_loader()
+    # Some cool program 
+    asm = Assembler()
+    asm.brk()
 
-    s = ''
-    for byt in asm._stack:
-        s += hex(byt)[2:].zfill(2)
-    print(len(s) // 2)
-    print(s)
+    # build the loader for our program
+    loader, dummy_loader = build_loader(asm)
+
+    print("Loader")
+    print(bytes.hex(loader))
+
+    print("Program")
+    print(bytes.hex(asm._stack))
+
+    print("Trigger")
+    print(bytes.hex(dummy_loader))
