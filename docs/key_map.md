@@ -1,5 +1,7 @@
 # Key map
 
+Note: This ignores the unstable character 
+
 ## Characters 
 
 This is the key map of the FX991ES-plus calculator when in LineIO normal mode (in other modes some of the areas marked out might be typable, but for the exploit to work we can't be in these modes).

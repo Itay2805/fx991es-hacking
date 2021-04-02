@@ -83,3 +83,11 @@ So once you know the background this is the full flow:
     * you know you got to the last char when you see on your right the first char of the overflow (should be `X`)
 3. Now enter 100 bytes of the rop hack string
     * Should be 
+
+## "Unstable character"
+
+The "unstable character" is essentially a way to get any character into memory with the use of the counter (as seen in the memory map specified in the first part). 
+
+This counter incremenets every time the cursor moves, so if we get some char on top of it, we can essentially get any character we want by moving the cursor and then deleting a char before it.
+
+It is extremely time consuming but it is still a thing if need be. For the most part we will simply make sure that our loader can be loaded without it and then with the loader we can load any char without a problem.
